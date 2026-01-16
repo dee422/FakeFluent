@@ -13,6 +13,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -27,10 +28,42 @@ import java.util.*
 
 class MainActivity : ComponentActivity() {
     private var tts: TextToSpeech? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        tts = TextToSpeech(this) { status -> if (status == TextToSpeech.SUCCESS) tts?.language = Locale.US }
-        setContent { MaterialTheme { Surface(Modifier.fillMaxSize(), color = Color(0xFFF8F9FA)) { ChatScreen(tts = tts) } } }
+
+        // 初始化 TTS：优化口音，寻找高质量美式英语音色
+        tts = TextToSpeech(this) { status ->
+            if (status == TextToSpeech.SUCCESS) {
+                tts?.language = Locale.US
+
+                // 尝试设置更地道的音色
+                val voices = tts?.voices
+                val naturalVoice = voices?.find {
+                    it.name.contains("en-us-x-sfg") ||
+                            it.name.contains("en-us-x-iom") ||
+                            it.name.contains("network")
+                }
+                naturalVoice?.let { tts?.voice = it }
+            }
+        }
+
+        setContent {
+            MaterialTheme {
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = Color(0xFFF8F9FA)
+                ) {
+                    ChatScreen(tts = tts)
+                }
+            }
+        }
+    }
+
+    override fun onDestroy() {
+        tts?.stop()
+        tts?.shutdown()
+        super.onDestroy()
     }
 }
 
@@ -41,90 +74,203 @@ fun ChatScreen(chatViewModel: ChatViewModel = viewModel(), tts: TextToSpeech?) {
     val listState = rememberLazyListState()
     val sheetState = rememberModalBottomSheetState()
 
-    LaunchedEffect(tts) { tts?.let { chatViewModel.setTTS(it) } }
+    // 将 Activity 的 TTS 传递给 ViewModel 管理
+    LaunchedEffect(tts) {
+        tts?.let { chatViewModel.setTTS(it) }
+    }
+
+    // 当有新消息时自动滚动到底部
     LaunchedEffect(chatViewModel.chatMessages.size) {
-        if (chatViewModel.chatMessages.isNotEmpty()) listState.animateScrollToItem(chatViewModel.chatMessages.size - 1)
+        if (chatViewModel.chatMessages.isNotEmpty()) {
+            listState.animateScrollToItem(chatViewModel.chatMessages.size - 1)
+        }
     }
 
     Scaffold(
         topBar = {
             CenterAlignedTopAppBar(
                 title = { Text("FakeFluent Coach", fontWeight = FontWeight.Bold) },
-                actions = { IconButton(onClick = { chatViewModel.isSheetOpen = true }) { Icon(Icons.Default.Settings, null) } }
+                actions = {
+                    IconButton(onClick = { chatViewModel.isSheetOpen = true }) {
+                        Icon(Icons.Default.Settings, contentDescription = "Settings")
+                    }
+                }
             )
         }
     ) { paddingValues ->
-        Column(Modifier.padding(paddingValues).fillMaxSize().imePadding().padding(horizontal = 16.dp)) {
-            LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = listState) {
-                items(chatViewModel.chatMessages) { message -> ChatBubble(message) }
+        Column(
+            modifier = Modifier
+                .padding(paddingValues)
+                .fillMaxSize()
+                .imePadding()
+                .padding(horizontal = 16.dp)
+        ) {
+            // 聊天列表区域
+            LazyColumn(
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+                state = listState,
+                contentPadding = PaddingValues(vertical = 16.dp)
+            ) {
+                items(chatViewModel.chatMessages) { message ->
+                    // 增加点击气泡重读逻辑
+                    ChatBubble(message) {
+                        if (!message.isUser) {
+                            chatViewModel.speakText(message.content)
+                        }
+                    }
+                }
             }
-            // 修正后的 Row
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(bottom = 16.dp)) {
-                TextField(value = inputText, onValueChange = { inputText = it }, modifier = Modifier.weight(1f), placeholder = { Text("Speak English...") }, shape = RoundedCornerShape(24.dp), colors = TextFieldDefaults.colors(focusedContainerColor = Color.White, unfocusedContainerColor = Color.White, focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent))
+
+            // 底部输入区域
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .padding(bottom = 16.dp)
+                    .fillMaxWidth()
+            ) {
+                TextField(
+                    value = inputText,
+                    onValueChange = { inputText = it },
+                    modifier = Modifier.weight(1f),
+                    placeholder = { Text("Speak English...") },
+                    shape = RoundedCornerShape(28.dp),
+                    colors = TextFieldDefaults.colors(
+                        focusedContainerColor = Color.White,
+                        unfocusedContainerColor = Color.White,
+                        focusedIndicatorColor = Color.Transparent,
+                        unfocusedIndicatorColor = Color.Transparent
+                    )
+                )
+
                 Spacer(Modifier.width(8.dp))
-                FloatingActionButton(onClick = { if (inputText.isNotBlank()) { chatViewModel.sendMessage(inputText); inputText = "" } }, containerColor = Color(0xFF2196F3), shape = CircleShape) {
-                    if (chatViewModel.isLoading) CircularProgressIndicator(color = Color.White, modifier = Modifier.size(24.dp))
-                    else Icon(Icons.AutoMirrored.Filled.Send, null, tint = Color.White)
+
+                // 核心逻辑：正在加载网络 或 正在朗读回复时，显示红色停止键
+                if (chatViewModel.isLoading || chatViewModel.isProcessing) {
+                    FloatingActionButton(
+                        onClick = { chatViewModel.stopGeneration() },
+                        containerColor = Color(0xFFFF5252),
+                        shape = CircleShape,
+                        modifier = Modifier.size(52.dp)
+                    ) {
+                        Icon(Icons.Default.Close, contentDescription = "Stop", tint = Color.White)
+                    }
+                } else {
+                    FloatingActionButton(
+                        onClick = {
+                            if (inputText.isNotBlank()) {
+                                chatViewModel.sendMessage(inputText)
+                                inputText = ""
+                            }
+                        },
+                        containerColor = Color(0xFF2196F3),
+                        shape = CircleShape,
+                        modifier = Modifier.size(52.dp)
+                    ) {
+                        Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send", tint = Color.White)
+                    }
                 }
             }
         }
 
         if (chatViewModel.isSheetOpen) {
-            ModalBottomSheet(onDismissRequest = { chatViewModel.isSheetOpen = false }, sheetState = sheetState) {
-                Column(Modifier.padding(24.dp).fillMaxWidth().padding(bottom = 32.dp)) {
-                    Text("API Settings", fontWeight = FontWeight.Bold, fontSize = 20.sp)
-                    Spacer(Modifier.height(16.dp))
-                    Text("Provider", color = Color.Gray)
-                    Row {
-                        ProviderRadio("SiliconFlow (直连)", "SiliconFlow", chatViewModel)
-                        Spacer(Modifier.width(10.dp))
-                        ProviderRadio("Groq (需VPN)", "Groq", chatViewModel)
-                    }
-                    Spacer(Modifier.height(16.dp))
-                    Text("Model", color = Color.Gray)
-                    if (chatViewModel.currentProvider == "SiliconFlow") {
-                        ModelRadio("DeepSeek-V3", "deepseek-ai/DeepSeek-V3", chatViewModel)
-                    } else {
-                        ModelRadio("Llama-3.3-70B", "llama-3.3-70b-versatile", chatViewModel)
-                    }
-                    Spacer(Modifier.height(20.dp))
-                    Button(onClick = { chatViewModel.clearHistory(); chatViewModel.isSheetOpen = false }, modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = Color.Red)) { Text("Clear History") }
-                }
+            ModalBottomSheet(
+                onDismissRequest = { chatViewModel.isSheetOpen = false },
+                sheetState = sheetState
+            ) {
+                SettingsContent(chatViewModel)
             }
         }
     }
 }
 
 @Composable
-fun ProviderRadio(label: String, id: String, vm: ChatViewModel) {
-    // 修正后的 Row
-    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable {
-        vm.currentProvider = id
-        vm.currentModel = if(id == "SiliconFlow") "deepseek-ai/DeepSeek-V3" else "llama-3.3-70b-versatile"
-    }) {
-        RadioButton(selected = vm.currentProvider == id, onClick = {
-            vm.currentProvider = id
-            vm.currentModel = if(id == "SiliconFlow") "deepseek-ai/DeepSeek-V3" else "llama-3.3-70b-versatile"
-        })
-        Text(label, fontSize = 14.sp)
+fun SettingsContent(vm: ChatViewModel) {
+    val providers = listOf(
+        "SiliconFlow (Qwen)" to "Qwen/Qwen2.5-7B-Instruct",
+        "SiliconFlow (DeepSeek)" to "deepseek-ai/DeepSeek-V3",
+        "Groq (国外)" to "llama-3.3-70b-versatile",
+        "Gemini (国外)" to "gemini-1.5-flash"
+    )
+
+    Column(
+        modifier = Modifier
+            .padding(24.dp)
+            .fillMaxWidth()
+            .padding(bottom = 32.dp)
+    ) {
+        Text("选择 AI 导师", fontWeight = FontWeight.ExtraBold, fontSize = 22.sp)
+        Spacer(Modifier.height(16.dp))
+
+        providers.forEach { (name, modelId) ->
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable {
+                        vm.currentProvider = name
+                        vm.currentModel = modelId
+                    }
+                    .padding(vertical = 12.dp)
+            ) {
+                RadioButton(
+                    selected = vm.currentProvider == name,
+                    onClick = {
+                        vm.currentProvider = name
+                        vm.currentModel = modelId
+                    }
+                )
+                Column(Modifier.padding(start = 8.dp)) {
+                    Text(name, fontWeight = FontWeight.Medium, fontSize = 16.sp)
+                    Text(modelId, fontSize = 12.sp, color = Color.Gray)
+                }
+            }
+        }
+
+        Spacer(Modifier.height(24.dp))
+
+        Button(
+            onClick = {
+                vm.clearHistory()
+                vm.isSheetOpen = false
+            },
+            modifier = Modifier.fillMaxWidth(),
+            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF5252)),
+            shape = RoundedCornerShape(12.dp)
+        ) {
+            Text("Clear Chat History", color = Color.White)
+        }
     }
 }
 
 @Composable
-fun ModelRadio(label: String, id: String, vm: ChatViewModel) {
-    // 修正后的 Row
-    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().clickable { vm.currentModel = id }) {
-        RadioButton(selected = vm.currentModel == id, onClick = { vm.currentModel = id })
-        Text(label)
-    }
-}
-
-@Composable
-fun ChatBubble(message: ChatMessageUI) {
+fun ChatBubble(message: ChatMessageUI, onClick: () -> Unit) {
     val isUser = message.isUser
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start) {
-        Surface(color = if (isUser) Color(0xFF007AFF) else Color.White, shape = RoundedCornerShape(12.dp), modifier = Modifier.padding(vertical = 4.dp).widthIn(max = 280.dp)) {
-            Text(message.content, Modifier.padding(12.dp), color = if (isUser) Color.White else Color.Black)
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 6.dp),
+        horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start
+    ) {
+        Surface(
+            color = if (isUser) Color(0xFF007AFF) else Color.White,
+            shape = RoundedCornerShape(
+                topStart = 16.dp,
+                topEnd = 16.dp,
+                bottomStart = if (isUser) 16.dp else 0.dp,
+                bottomEnd = if (isUser) 0.dp else 16.dp
+            ),
+            tonalElevation = 2.dp,
+            modifier = Modifier
+                .widthIn(max = 280.dp)
+                // 点击非用户气泡（即AI回复）时触发重读
+                .clickable(enabled = !isUser) { onClick() }
+        ) {
+            Text(
+                text = message.content,
+                modifier = Modifier.padding(14.dp),
+                color = if (isUser) Color.White else Color.Black,
+                lineHeight = 22.sp
+            )
         }
     }
 }

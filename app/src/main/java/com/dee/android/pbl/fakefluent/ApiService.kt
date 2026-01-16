@@ -5,7 +5,8 @@ import retrofit2.http.Header
 import retrofit2.http.POST
 
 interface ApiService {
-    @POST("v1/chat/completions")
+    // 去掉开头的 v1/，交给 BaseUrl 来决定版本
+    @POST("chat/completions")
     suspend fun getChatResponse(
         @Header("Authorization") token: String,
         @Body request: ChatRequest

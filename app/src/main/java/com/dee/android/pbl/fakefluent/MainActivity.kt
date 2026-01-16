@@ -13,13 +13,14 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
-import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -31,23 +32,29 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // 初始化 TTS
+        // 初始化 TTS：优化口音，寻找高质量美式英语音色
         tts = TextToSpeech(this) { status ->
             if (status == TextToSpeech.SUCCESS) {
                 tts?.language = Locale.US
+
+                // 尝试设置更地道的音色
+                val voices = tts?.voices
+                val naturalVoice = voices?.find {
+                    it.name.contains("en-us-x-sfg") ||
+                            it.name.contains("en-us-x-iom") ||
+                            it.name.contains("network")
+                }
+                naturalVoice?.let { tts?.voice = it }
             }
         }
 
         setContent {
-            // 使用 MaterialTheme 包裹，确保 Material3 组件能找到样式上下文
             MaterialTheme {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
-                    color = Color(0xFFF5F5F5)
+                    color = Color(0xFFF8F9FA)
                 ) {
-                    ChatScreen(speak = { text ->
-                        tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, null)
-                    })
+                    ChatScreen(tts = tts)
                 }
             }
         }
@@ -62,36 +69,29 @@ class MainActivity : ComponentActivity() {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ChatScreen(
-    chatViewModel: ChatViewModel = viewModel(),
-    speak: (String) -> Unit
-) {
+fun ChatScreen(chatViewModel: ChatViewModel = viewModel(), tts: TextToSpeech?) {
     var inputText by remember { mutableStateOf("") }
-    var showTip by remember { mutableStateOf(true) }
-    val sheetState = rememberModalBottomSheetState()
-    var isSheetOpen by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
+    val sheetState = rememberModalBottomSheetState()
 
-    // 建议将 API Key 放在加密或安全位置，这里保持现状
-    val myApiKey = "sk-uexdsdffmdxssoahsumbsbshmjepmehxuhrbxdevtczbmivm"
+    // 将 Activity 的 TTS 传递给 ViewModel 管理
+    LaunchedEffect(tts) {
+        tts?.let { chatViewModel.setTTS(it) }
+    }
 
-    // 监听消息列表长度，实现自动滚动和 AI 朗读
-    LaunchedEffect(chatViewModel.chatHistory.size) {
-        if (chatViewModel.chatHistory.isNotEmpty()) {
-            listState.animateScrollToItem(chatViewModel.chatHistory.size - 1)
-            val lastMessage = chatViewModel.chatHistory.last()
-            if (lastMessage.role == "assistant") {
-                speak(lastMessage.content)
-            }
+    // 当有新消息时自动滚动到底部
+    LaunchedEffect(chatViewModel.chatMessages.size) {
+        if (chatViewModel.chatMessages.isNotEmpty()) {
+            listState.animateScrollToItem(chatViewModel.chatMessages.size - 1)
         }
     }
 
     Scaffold(
         topBar = {
             CenterAlignedTopAppBar(
-                title = { Text("FakeFluent Coach", fontSize = 18.sp) },
+                title = { Text("FakeFluent Coach", fontWeight = FontWeight.Bold) },
                 actions = {
-                    IconButton(onClick = { isSheetOpen = true }) {
+                    IconButton(onClick = { chatViewModel.isSheetOpen = true }) {
                         Icon(Icons.Default.Settings, contentDescription = "Settings")
                     }
                 }
@@ -102,50 +102,37 @@ fun ChatScreen(
             modifier = Modifier
                 .padding(paddingValues)
                 .fillMaxSize()
-                .imePadding() // 自动避开软键盘
+                .imePadding()
                 .padding(horizontal = 16.dp)
         ) {
-            // 1. 聊天列表区域
+            // 聊天列表区域
             LazyColumn(
-                state = listState,
                 modifier = Modifier.weight(1f).fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-                contentPadding = PaddingValues(vertical = 8.dp)
+                state = listState,
+                contentPadding = PaddingValues(vertical = 16.dp)
             ) {
-                items(chatViewModel.chatHistory) { message ->
-                    ChatBubble(message, onTextClick = { text -> speak(text) })
-                }
-            }
-
-            // 2. 语音输入提示框
-            if (showTip) {
-                Surface(
-                    modifier = Modifier.padding(vertical = 8.dp),
-                    color = Color(0xFFFFF9C4),
-                    shape = RoundedCornerShape(8.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.padding(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text("💡 建议用输入法自带语音(选英)输入", modifier = Modifier.weight(1f), fontSize = 12.sp)
-                        IconButton(onClick = { showTip = false }, modifier = Modifier.size(24.dp)) {
-                            Icon(Icons.Default.Clear, null, modifier = Modifier.size(16.dp))
+                items(chatViewModel.chatMessages) { message ->
+                    // 增加点击气泡重读逻辑
+                    ChatBubble(message) {
+                        if (!message.isUser) {
+                            chatViewModel.speakText(message.content)
                         }
                     }
                 }
             }
 
-            // 3. 底部输入区
+            // 底部输入区域
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)
+                modifier = Modifier
+                    .padding(bottom = 16.dp)
+                    .fillMaxWidth()
             ) {
                 TextField(
                     value = inputText,
                     onValueChange = { inputText = it },
                     modifier = Modifier.weight(1f),
-                    placeholder = { Text("Talk to me...") },
+                    placeholder = { Text("Speak English...") },
                     shape = RoundedCornerShape(28.dp),
                     colors = TextFieldDefaults.colors(
                         focusedContainerColor = Color.White,
@@ -154,116 +141,136 @@ fun ChatScreen(
                         unfocusedIndicatorColor = Color.Transparent
                     )
                 )
-                Spacer(modifier = Modifier.width(8.dp))
-                Button(
-                    onClick = {
-                        if (inputText.isNotBlank()) {
-                            chatViewModel.sendMessage(inputText, myApiKey)
-                            inputText = ""
-                        }
-                    },
-                    enabled = !chatViewModel.isLoading,
-                    shape = CircleShape,
-                    modifier = Modifier.size(56.dp),
-                    contentPadding = PaddingValues(0.dp)
-                ) {
-                    if (chatViewModel.isLoading) {
-                        CircularProgressIndicator(modifier = Modifier.size(24.dp), color = Color.White, strokeWidth = 2.dp)
-                    } else {
-                        Icon(Icons.AutoMirrored.Filled.Send, null)
+
+                Spacer(Modifier.width(8.dp))
+
+                // 核心逻辑：正在加载网络 或 正在朗读回复时，显示红色停止键
+                if (chatViewModel.isLoading || chatViewModel.isProcessing) {
+                    FloatingActionButton(
+                        onClick = { chatViewModel.stopGeneration() },
+                        containerColor = Color(0xFFFF5252),
+                        shape = CircleShape,
+                        modifier = Modifier.size(52.dp)
+                    ) {
+                        Icon(Icons.Default.Close, contentDescription = "Stop", tint = Color.White)
+                    }
+                } else {
+                    FloatingActionButton(
+                        onClick = {
+                            if (inputText.isNotBlank()) {
+                                chatViewModel.sendMessage(inputText)
+                                inputText = ""
+                            }
+                        },
+                        containerColor = Color(0xFF2196F3),
+                        shape = CircleShape,
+                        modifier = Modifier.size(52.dp)
+                    ) {
+                        Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send", tint = Color.White)
                     }
                 }
             }
         }
 
-        // 设置抽屉
-        if (isSheetOpen) {
-            ModalBottomSheet(onDismissRequest = { isSheetOpen = false }, sheetState = sheetState) {
-                SettingsSheetContent(chatViewModel) { isSheetOpen = false }
+        if (chatViewModel.isSheetOpen) {
+            ModalBottomSheet(
+                onDismissRequest = { chatViewModel.isSheetOpen = false },
+                sheetState = sheetState
+            ) {
+                SettingsContent(chatViewModel)
             }
         }
     }
 }
 
-// 2. 找到 ChatBubble 函数定义
 @Composable
-fun ChatBubble(message: ChatMessage, onTextClick: (String) -> Unit) {
-    val isUser = message.role == "user"
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
-        horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start
+fun SettingsContent(vm: ChatViewModel) {
+    val providers = listOf(
+        "SiliconFlow (Qwen)" to "Qwen/Qwen2.5-7B-Instruct",
+        "SiliconFlow (DeepSeek)" to "deepseek-ai/DeepSeek-V3",
+        "Groq (国外)" to "llama-3.3-70b-versatile",
+        "Gemini (国外)" to "gemini-1.5-flash"
+    )
+
+    Column(
+        modifier = Modifier
+            .padding(24.dp)
+            .fillMaxWidth()
+            .padding(bottom = 32.dp)
     ) {
-        Card(
-            // 彻底删除 weight，回归最原始的自适应宽度，这是防止闪退的唯一办法
-            modifier = Modifier
-                .padding(4.dp)
-                .clickable { onTextClick(message.content) },
-            colors = CardDefaults.cardColors(
-                containerColor = if (isUser) Color(0xFF007AFF) else Color.White
-            )
-        ) {
-            Text(
-                text = message.content,
-                modifier = Modifier.padding(12.dp),
-                color = if (isUser) Color.White else Color.Black
-            )
-        }
-    }
-}
+        Text("选择 AI 导师", fontWeight = FontWeight.ExtraBold, fontSize = 22.sp)
+        Spacer(Modifier.height(16.dp))
 
-@Composable
-fun SettingsSheetContent(chatViewModel: ChatViewModel, onClose: () -> Unit) {
-    Column(modifier = Modifier.padding(16.dp).fillMaxWidth().padding(bottom = 32.dp)) {
-        Text("API Settings", style = MaterialTheme.typography.titleLarge)
-        Spacer(modifier = Modifier.height(24.dp))
-
-        Text("Server Domain (Base URL)", style = MaterialTheme.typography.labelLarge, color = Color.Gray)
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            RadioButton(
-                selected = chatViewModel.currentBaseUrl.contains("com"),
-                onClick = { chatViewModel.currentBaseUrl = "https://api.siliconflow.com/" }
-            )
-            Text(".com")
-            Spacer(modifier = Modifier.width(16.dp))
-            RadioButton(
-                selected = chatViewModel.currentBaseUrl.contains("cn"),
-                onClick = { chatViewModel.currentBaseUrl = "https://api.siliconflow.cn/" }
-            )
-            Text(".cn")
-        }
-
-        HorizontalDivider(modifier = Modifier.padding(vertical = 16.dp))
-
-        Text("AI Model", style = MaterialTheme.typography.labelLarge, color = Color.Gray)
-        Column {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+        providers.forEach { (name, modelId) ->
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable {
+                        vm.currentProvider = name
+                        vm.currentModel = modelId
+                    }
+                    .padding(vertical = 12.dp)
+            ) {
                 RadioButton(
-                    selected = chatViewModel.currentModel.contains("DeepSeek"),
-                    onClick = { chatViewModel.currentModel = "deepseek-ai/DeepSeek-V3" }
+                    selected = vm.currentProvider == name,
+                    onClick = {
+                        vm.currentProvider = name
+                        vm.currentModel = modelId
+                    }
                 )
-                Text("DeepSeek-V3")
-            }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                RadioButton(
-                    selected = chatViewModel.currentModel.contains("Qwen"),
-                    onClick = { chatViewModel.currentModel = "Qwen/Qwen2.5-7B-Instruct" }
-                )
-                Text("Qwen-2.5")
+                Column(Modifier.padding(start = 8.dp)) {
+                    Text(name, fontWeight = FontWeight.Medium, fontSize = 16.sp)
+                    Text(modelId, fontSize = 12.sp, color = Color.Gray)
+                }
             }
         }
 
-        HorizontalDivider(modifier = Modifier.padding(vertical = 16.dp))
+        Spacer(Modifier.height(24.dp))
 
         Button(
             onClick = {
-                chatViewModel.clearHistory()
-                onClose()
+                vm.clearHistory()
+                vm.isSheetOpen = false
             },
-            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF4444)),
             modifier = Modifier.fillMaxWidth(),
+            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF5252)),
             shape = RoundedCornerShape(12.dp)
         ) {
             Text("Clear Chat History", color = Color.White)
+        }
+    }
+}
+
+@Composable
+fun ChatBubble(message: ChatMessageUI, onClick: () -> Unit) {
+    val isUser = message.isUser
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 6.dp),
+        horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start
+    ) {
+        Surface(
+            color = if (isUser) Color(0xFF007AFF) else Color.White,
+            shape = RoundedCornerShape(
+                topStart = 16.dp,
+                topEnd = 16.dp,
+                bottomStart = if (isUser) 16.dp else 0.dp,
+                bottomEnd = if (isUser) 0.dp else 16.dp
+            ),
+            tonalElevation = 2.dp,
+            modifier = Modifier
+                .widthIn(max = 280.dp)
+                // 点击非用户气泡（即AI回复）时触发重读
+                .clickable(enabled = !isUser) { onClick() }
+        ) {
+            Text(
+                text = message.content,
+                modifier = Modifier.padding(14.dp),
+                color = if (isUser) Color.White else Color.Black,
+                lineHeight = 22.sp
+            )
         }
     }
 }

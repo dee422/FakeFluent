@@ -4,22 +4,34 @@ import retrofit2.http.Body
 import retrofit2.http.Header
 import retrofit2.http.POST
 
-// 1. 数据模型（必须写在这里或者被 ChatViewModel 引用到）
-data class ChatMessage(val role: String, val content: String)
-data class ChatRequest(
-    val model: String = "deepseek-ai/DeepSeek-V3", // 这里确保填入模型名称
-    val messages: List<ChatMessage>,
-    val stream: Boolean = false
-)
-data class ChatResponse(val choices: List<Choice>)
-data class Choice(val message: ChatMessage)
-
-// 2. 接口定义
-interface ChatApiService {
+interface ApiService {
     @POST("v1/chat/completions")
-    suspend fun getChatCompletion(
-        // 注意：一定要写成 @Header("Authorization")，这才是服务器识别的键名
-        @Header("Authorization") authorization: String,
+    suspend fun getChatResponse(
+        @Header("Authorization") token: String,
         @Body request: ChatRequest
     ): ChatResponse
 }
+
+/**
+ * 以下数据模型必须放在 interface 外部，
+ * 这样 ChatViewModel 才能通过 "import com.dee.android.pbl.fakefluent.ChatRequest" 找到它们。
+ */
+
+data class ChatRequest(
+    val model: String,
+    val messages: List<Message>,
+    val temperature: Double = 0.7
+)
+
+data class Message(
+    val role: String,
+    val content: String
+)
+
+data class ChatResponse(
+    val choices: List<Choice>
+)
+
+data class Choice(
+    val message: Message
+)

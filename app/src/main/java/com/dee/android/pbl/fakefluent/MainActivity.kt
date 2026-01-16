@@ -4,6 +4,7 @@ import android.os.Bundle
 import android.speech.tts.TextToSpeech
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.viewModels
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -23,21 +24,20 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.lifecycle.viewmodel.compose.viewModel
+import kotlinx.coroutines.delay
 import java.util.*
+import androidx.compose.material.icons.filled.CheckCircle
 
 class MainActivity : ComponentActivity() {
+    private val chatViewModel: ChatViewModel by viewModels()
     private var tts: TextToSpeech? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // 初始化 TTS：优化口音，寻找高质量美式英语音色
         tts = TextToSpeech(this) { status ->
             if (status == TextToSpeech.SUCCESS) {
                 tts?.language = Locale.US
-
-                // 尝试设置更地道的音色
                 val voices = tts?.voices
                 val naturalVoice = voices?.find {
                     it.name.contains("en-us-x-sfg") ||
@@ -45,6 +45,7 @@ class MainActivity : ComponentActivity() {
                             it.name.contains("network")
                 }
                 naturalVoice?.let { tts?.voice = it }
+                chatViewModel.setTTS(tts!!)
             }
         }
 
@@ -54,7 +55,7 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = Color(0xFFF8F9FA)
                 ) {
-                    ChatScreen(tts = tts)
+                    ChatScreen(chatViewModel)
                 }
             }
         }
@@ -69,29 +70,29 @@ class MainActivity : ComponentActivity() {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ChatScreen(chatViewModel: ChatViewModel = viewModel(), tts: TextToSpeech?) {
+fun ChatScreen(vm: ChatViewModel) {
     var inputText by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
     val sheetState = rememberModalBottomSheetState()
 
-    // 将 Activity 的 TTS 传递给 ViewModel 管理
-    LaunchedEffect(tts) {
-        tts?.let { chatViewModel.setTTS(it) }
-    }
-
-    // 当有新消息时自动滚动到底部
-    LaunchedEffect(chatViewModel.chatMessages.size) {
-        if (chatViewModel.chatMessages.isNotEmpty()) {
-            listState.animateScrollToItem(chatViewModel.chatMessages.size - 1)
+    // 顺滑版自动滚动逻辑
+    LaunchedEffect(vm.chatMessages.lastOrNull()?.content) {
+        // 只有当 AI 正在输出内容（isLoading 或 isProcessing）时才触发
+        if (vm.isLoading || vm.isProcessing) {
+            if (vm.chatMessages.isNotEmpty()) {
+                // 使用 animateScrollToItem 实现平滑滚动
+                // 它会自动处理这种小幅度的增量滚动，看起来就像在被文字推着走
+                listState.animateScrollToItem(listState.layoutInfo.totalItemsCount - 1)
+            }
         }
     }
 
     Scaffold(
         topBar = {
             CenterAlignedTopAppBar(
-                title = { Text("FakeFluent Coach", fontWeight = FontWeight.Bold) },
+                title = { Text("FakeFluent - ${vm.currentRole.displayName}", fontWeight = FontWeight.Bold) },
                 actions = {
-                    IconButton(onClick = { chatViewModel.isSheetOpen = true }) {
+                    IconButton(onClick = { vm.isSheetOpen = true }) {
                         Icon(Icons.Default.Settings, contentDescription = "Settings")
                     }
                 }
@@ -105,28 +106,31 @@ fun ChatScreen(chatViewModel: ChatViewModel = viewModel(), tts: TextToSpeech?) {
                 .imePadding()
                 .padding(horizontal = 16.dp)
         ) {
-            // 聊天列表区域
             LazyColumn(
                 modifier = Modifier.weight(1f).fillMaxWidth(),
                 state = listState,
                 contentPadding = PaddingValues(vertical = 16.dp)
             ) {
-                items(chatViewModel.chatMessages) { message ->
-                    // 增加点击气泡重读逻辑
+                items(vm.chatMessages) { message ->
                     ChatBubble(message) {
                         if (!message.isUser) {
-                            chatViewModel.speakText(message.content)
+                            vm.speakText(message.content)
                         }
+                    }
+                }
+
+                // 底部占位，防止输入框遮挡
+                if (vm.isLoading || vm.isProcessing) {
+                    item {
+                        Spacer(modifier = Modifier.height(60.dp))
                     }
                 }
             }
 
-            // 底部输入区域
+            // 底部输入栏
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier
-                    .padding(bottom = 16.dp)
-                    .fillMaxWidth()
+                modifier = Modifier.padding(bottom = 16.dp).fillMaxWidth()
             ) {
                 TextField(
                     value = inputText,
@@ -144,10 +148,9 @@ fun ChatScreen(chatViewModel: ChatViewModel = viewModel(), tts: TextToSpeech?) {
 
                 Spacer(Modifier.width(8.dp))
 
-                // 核心逻辑：正在加载网络 或 正在朗读回复时，显示红色停止键
-                if (chatViewModel.isLoading || chatViewModel.isProcessing) {
+                if (vm.isLoading || vm.isProcessing) {
                     FloatingActionButton(
-                        onClick = { chatViewModel.stopGeneration() },
+                        onClick = { vm.stopGeneration() },
                         containerColor = Color(0xFFFF5252),
                         shape = CircleShape,
                         modifier = Modifier.size(52.dp)
@@ -158,7 +161,7 @@ fun ChatScreen(chatViewModel: ChatViewModel = viewModel(), tts: TextToSpeech?) {
                     FloatingActionButton(
                         onClick = {
                             if (inputText.isNotBlank()) {
-                                chatViewModel.sendMessage(inputText)
+                                vm.sendMessage(inputText)
                                 inputText = ""
                             }
                         },
@@ -172,17 +175,18 @@ fun ChatScreen(chatViewModel: ChatViewModel = viewModel(), tts: TextToSpeech?) {
             }
         }
 
-        if (chatViewModel.isSheetOpen) {
+        if (vm.isSheetOpen) {
             ModalBottomSheet(
-                onDismissRequest = { chatViewModel.isSheetOpen = false },
+                onDismissRequest = { vm.isSheetOpen = false },
                 sheetState = sheetState
             ) {
-                SettingsContent(chatViewModel)
+                SettingsContent(vm)
             }
         }
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsContent(vm: ChatViewModel) {
     val providers = listOf(
@@ -192,13 +196,31 @@ fun SettingsContent(vm: ChatViewModel) {
         "Gemini (国外)" to "gemini-1.5-flash"
     )
 
-    Column(
-        modifier = Modifier
-            .padding(24.dp)
-            .fillMaxWidth()
-            .padding(bottom = 32.dp)
-    ) {
-        Text("选择 AI 导师", fontWeight = FontWeight.ExtraBold, fontSize = 22.sp)
+    Column(modifier = Modifier.padding(24.dp).fillMaxWidth().padding(bottom = 32.dp)) {
+        Text("练习场景 (Role Play)", fontWeight = FontWeight.ExtraBold, fontSize = 20.sp)
+        Spacer(Modifier.height(12.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            CoachRole.entries.forEach { role ->
+                FilterChip(
+                    selected = vm.currentRole == role,
+                    onClick = { vm.changeRole(role) },
+                    label = { Text(role.displayName) },
+                    colors = FilterChipDefaults.filterChipColors(
+                        selectedContainerColor = Color(0xFF2196F3),
+                        selectedLabelColor = Color.White
+                    )
+                )
+            }
+        }
+
+        Spacer(Modifier.height(24.dp))
+        HorizontalDivider()
+        Spacer(Modifier.height(24.dp))
+
+        Text("AI 导师模型", fontWeight = FontWeight.ExtraBold, fontSize = 20.sp)
         Spacer(Modifier.height(16.dp))
 
         providers.forEach { (name, modelId) ->
@@ -245,32 +267,78 @@ fun SettingsContent(vm: ChatViewModel) {
 @Composable
 fun ChatBubble(message: ChatMessageUI, onClick: () -> Unit) {
     val isUser = message.isUser
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 6.dp),
         horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start
     ) {
-        Surface(
-            color = if (isUser) Color(0xFF007AFF) else Color.White,
-            shape = RoundedCornerShape(
-                topStart = 16.dp,
-                topEnd = 16.dp,
-                bottomStart = if (isUser) 16.dp else 0.dp,
-                bottomEnd = if (isUser) 0.dp else 16.dp
-            ),
-            tonalElevation = 2.dp,
-            modifier = Modifier
-                .widthIn(max = 280.dp)
-                // 点击非用户气泡（即AI回复）时触发重读
-                .clickable(enabled = !isUser) { onClick() }
-        ) {
-            Text(
-                text = message.content,
-                modifier = Modifier.padding(14.dp),
-                color = if (isUser) Color.White else Color.Black,
-                lineHeight = 22.sp
-            )
+        Column(horizontalAlignment = if (isUser) Alignment.End else Alignment.Start) {
+            // 解析文本：尝试将普通回复和纠错内容分开
+            val parts = message.content.split("Correction:")
+            val mainContent = parts[0].trim()
+            val correction = if (parts.size > 1) parts[1].trim() else null
+
+            // 1. 主消息气泡
+            Surface(
+                color = if (isUser) Color(0xFF007AFF) else Color.White,
+                shape = RoundedCornerShape(
+                    topStart = 16.dp,
+                    topEnd = 16.dp,
+                    bottomStart = if (isUser) 16.dp else 0.dp,
+                    bottomEnd = if (isUser) 0.dp else 16.dp
+                ),
+                tonalElevation = 2.dp,
+                modifier = Modifier
+                    .widthIn(max = 280.dp)
+                    .clickable(enabled = !isUser) { onClick() }
+            ) {
+                Text(
+                    text = mainContent,
+                    modifier = Modifier.padding(14.dp),
+                    color = if (isUser) Color.White else Color.Black,
+                    lineHeight = 22.sp
+                )
+            }
+
+            // 2. 纠错小卡片（仅在 AI 回复且有错误时显示）
+            if (correction != null && !isUser) {
+                Spacer(Modifier.height(6.dp))
+                Surface(
+                    color = Color(0xFFFFF3E0), // 温和的浅橘色背景
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier.widthIn(max = 260.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.Top
+                    ) {
+                        // 提示图标
+                        Icon(
+                            imageVector = Icons.Default.Settings, // 这里可以用 Settings 或自定义图标
+                            contentDescription = null,
+                            tint = Color(0xFFE65100),
+                            modifier = Modifier.size(16.dp).padding(top = 2.dp)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Column {
+                            Text(
+                                text = "Teacher's Note:",
+                                color = Color(0xFFE65100),
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = correction,
+                                color = Color(0xFF5D4037),
+                                fontSize = 13.sp,
+                                lineHeight = 18.sp
+                            )
+                        }
+                    }
+                }
+            }
         }
     }
 }

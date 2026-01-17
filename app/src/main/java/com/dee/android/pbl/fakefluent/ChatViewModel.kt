@@ -9,16 +9,10 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.*
 import java.util.*
 
-// 数据模型
 data class ChatMessageUI(val content: String, val isUser: Boolean)
-// 🚀 场景模型：新增 icon 字段
 data class Scenario(val title: String, val prompt: String, val icon: String = "💬")
 
 enum class CoachRole(val displayName: String, val systemPrompt: String) {
@@ -31,7 +25,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val prefs = application.getSharedPreferences("fake_fluent_prefs", Context.MODE_PRIVATE)
     private val gson = Gson()
 
-    // 状态管理
     var chatMessages = mutableStateListOf<ChatMessageUI>()
     var scenarios = mutableStateListOf<Scenario>()
         private set
@@ -42,7 +35,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     var userApiKey by mutableStateOf("")
 
     var isLoading by mutableStateOf(false)
-    var isProcessing by mutableStateOf(false)
+    var isProcessing by mutableStateOf(false) // 专门用于 TTS 状态
     var isSheetOpen by mutableStateOf(false)
 
     private val apiChatHistory = mutableListOf<Message>()
@@ -54,13 +47,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         loadScenarios()
     }
 
-    // --- 角色切换 ---
-    fun changeRole(role: CoachRole) {
-        currentRole = role
-        clearHistory()
-    }
+    fun changeRole(role: CoachRole) { currentRole = role; clearHistory() }
 
-    // --- 场景持久化逻辑 ---
     private fun loadScenarios() {
         val json = prefs.getString("custom_scenarios_v2", null)
         if (json == null) {
@@ -70,20 +58,17 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 Scenario("Ask for Directions", "I'm lost in London. Can you help me?", "🗺️"),
                 Scenario("Daily Small Talk", "Let's just chat about our day.", "🏠")
             )
-            scenarios.addAll(defaultList)
-            saveScenariosToPrefs()
+            scenarios.addAll(defaultList); saveScenariosToPrefs()
         } else {
             try {
-                val type = object : TypeToken<List<Scenario>>() {}.type
-                val list: List<Scenario> = gson.fromJson(json, type)
+                val list: List<Scenario> = gson.fromJson(json, object : TypeToken<List<Scenario>>() {}.type)
                 scenarios.addAll(list)
             } catch (e: Exception) { e.printStackTrace() }
         }
     }
 
     private fun saveScenariosToPrefs() {
-        val json = gson.toJson(scenarios)
-        prefs.edit().putString("custom_scenarios_v2", json).apply()
+        prefs.edit().putString("custom_scenarios_v2", gson.toJson(scenarios)).apply()
     }
 
     fun addScenario(title: String, prompt: String, icon: String) {
@@ -93,27 +78,19 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun deleteScenario(scenario: Scenario) {
-        scenarios.remove(scenario)
-        saveScenariosToPrefs()
-    }
+    fun deleteScenario(scenario: Scenario) { scenarios.remove(scenario); saveScenariosToPrefs() }
 
-    // --- API Key 管理 ---
     private fun getStorageKey() = "api_key_${currentProvider.replace(" ", "_").lowercase()}"
     fun getCurrentSavedKey() = prefs.getString(getStorageKey(), "") ?: ""
-    fun saveApiKey(newKey: String) {
-        prefs.edit().putString(getStorageKey(), newKey).apply()
-        userApiKey = newKey
-    }
+    fun saveApiKey(newKey: String) { prefs.edit().putString(getStorageKey(), newKey).apply(); userApiKey = newKey }
 
     private fun getEffectiveApiKey(): String {
         val savedKey = getCurrentSavedKey()
         return if (savedKey.isNotBlank()) {
             if (savedKey.startsWith("Bearer ")) savedKey else "Bearer $savedKey"
-        } else "Bearer YOUR_BACKUP_KEY"
+        } else ""
     }
 
-    // --- 核心对话逻辑 ---
     fun sendMessage(userText: String) {
         if (userText.isBlank()) return
         if (apiChatHistory.isEmpty()) apiChatHistory.add(Message("system", currentRole.systemPrompt))
@@ -128,9 +105,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         apiChatHistory.add(Message("user", userText))
 
         fetchJob = viewModelScope.launch {
-            isLoading = true
+            isLoading = true // 🚀 开启显示停止键
             val aiMsgIndex = chatMessages.size
-            chatMessages.add(ChatMessageUI("", false))
+            chatMessages.add(ChatMessageUI("...", false))
             var accumulatedText = ""
 
             try {
@@ -140,32 +117,36 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 withContext(Dispatchers.IO) {
                     responseBody.byteStream().bufferedReader().use { reader ->
                         reader.forEachLine { line ->
-                            if (line.startsWith("data: ")) {
-                                val data = line.substring(6).trim()
-                                if (data != "[DONE]") {
-                                    try {
-                                        val res = gson.fromJson(data, ChatStreamResponse::class.java)
-                                        val content = res.choices[0].delta.content ?: ""
-                                        if (content.isNotEmpty()) {
-                                            accumulatedText += content
-                                            viewModelScope.launch {
+                            if (line.startsWith("data: ") && line.trim() != "data: [DONE]") {
+                                try {
+                                    val res = gson.fromJson(line.substring(6), ChatStreamResponse::class.java)
+                                    val content = res.choices[0].delta.content ?: ""
+                                    if (content.isNotEmpty()) {
+                                        accumulatedText += content
+                                        // 🚀 修复点：直接使用 viewModelScope.launch 而不是 withContext
+                                        viewModelScope.launch(Dispatchers.Main) {
+                                            if (aiMsgIndex < chatMessages.size) {
                                                 chatMessages[aiMsgIndex] = ChatMessageUI(accumulatedText, false)
                                             }
                                         }
-                                    } catch (e: Exception) {}
+                                    }
+                                } catch (e: Exception) {
+                                    // 忽略单行解析错误
                                 }
                             }
                         }
                     }
                 }
                 apiChatHistory.add(Message("assistant", accumulatedText))
-                isLoading = false
                 speakText(accumulatedText)
             } catch (e: Exception) {
-                isLoading = false
                 if (e !is CancellationException) {
-                    chatMessages[aiMsgIndex] = ChatMessageUI("Error: ${e.localizedMessage}", false)
+                    withContext(Dispatchers.Main) {
+                        chatMessages[aiMsgIndex] = ChatMessageUI("Error: ${e.localizedMessage}", false)
+                    }
                 }
+            } finally {
+                isLoading = false // 🚀 完成或取消，停止键消失
             }
         }
     }
@@ -173,19 +154,28 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     fun setTTS(ttsInstance: TextToSpeech) {
         this.tts = ttsInstance
         this.tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-            override fun onStart(id: String?) { viewModelScope.launch { isProcessing = true } }
-            override fun onDone(id: String?) { viewModelScope.launch { isProcessing = false } }
-            override fun onError(id: String?) { viewModelScope.launch { isProcessing = false } }
+            override fun onStart(id: String?) { isProcessing = true }
+            override fun onDone(id: String?) { isProcessing = false }
+            override fun onError(id: String?) { isProcessing = false }
         })
     }
 
     fun speakText(text: String) {
         if (text.isBlank()) return
         val speech = text.split("Correction:")[0].trim()
-        isProcessing = true
         tts?.speak(speech, TextToSpeech.QUEUE_FLUSH, null, "CHAT_ID")
     }
 
-    fun stopGeneration() { fetchJob?.cancel(); tts?.stop(); isLoading = false; isProcessing = false }
-    fun clearHistory() { chatMessages.clear(); apiChatHistory.clear() }
+    fun stopGenerating() {
+        fetchJob?.cancel()
+        fetchJob = null
+        tts?.stop()
+        isLoading = false
+        isProcessing = false
+        if (chatMessages.isNotEmpty() && chatMessages.last().content == "...") {
+            chatMessages.removeAt(chatMessages.size - 1)
+        }
+    }
+
+    fun clearHistory() { chatMessages.clear(); apiChatHistory.clear(); stopGenerating() }
 }

@@ -10,7 +10,9 @@ import androidx.lifecycle.viewModelScope
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.stateIn
 import java.util.*
+import kotlinx.coroutines.flow.first
 
 data class ChatMessageUI(val content: String, val isUser: Boolean)
 data class Scenario(val title: String, val prompt: String, val icon: String = "💬")
@@ -22,6 +24,44 @@ enum class CoachRole(val displayName: String, val systemPrompt: String) {
 }
 
 class ChatViewModel(application: Application) : AndroidViewModel(application) {
+    // 🚀 1. 初始化数据库和 DAO
+    private val db = com.dee.android.pbl.fakefluent.db.AppDatabase.getDatabase(application)
+    private val dao = db.favoriteWordDao()
+
+    var isNotebookOpen by mutableStateOf(false)
+
+    // 🚀 2. 定义收藏列表的 StateFlow
+    // 这里直接使用这种写法，最稳定，不需要额外的扩展函数
+    val favoriteWords: kotlinx.coroutines.flow.StateFlow<List<com.dee.android.pbl.fakefluent.db.FavoriteWord>> =
+        dao.getAllWords().stateIn(
+            scope = viewModelScope,
+            started = kotlinx.coroutines.flow.SharingStarted.WhileSubscribed(5000),
+            initialValue = emptyList()
+        )
+
+    // 🚀 3. 添加收藏/取消收藏逻辑
+    fun toggleFavorite(text: String, correction: String = "") {
+        viewModelScope.launch(Dispatchers.IO) {
+            // 1. 先检查数据库里是否已经有这个文本
+            if (dao.isFavorite(text)) {
+                // 2. 如果有，我们需要查出所有的词，找到匹配的那一个并删除
+                // 注意：这里我们通过 originalText 来匹配
+                val allFavs = dao.getAllWords().first() // 获取当前列表的第一帧数据
+                val itemToDelete = allFavs.find { it.originalText == text }
+                itemToDelete?.let {
+                    dao.delete(it)
+                }
+            } else {
+                // 3. 如果没有，则执行插入
+                val newFav = com.dee.android.pbl.fakefluent.db.FavoriteWord(
+                    originalText = text,
+                    correction = correction,
+                    scene = currentRole.displayName
+                )
+                dao.insert(newFav)
+            }
+        }
+    }
     private val prefs = application.getSharedPreferences("fake_fluent_prefs", Context.MODE_PRIVATE)
     private val gson = Gson()
 

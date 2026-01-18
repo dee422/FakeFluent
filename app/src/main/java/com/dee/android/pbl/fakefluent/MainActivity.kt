@@ -26,6 +26,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
 import java.util.*
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 
 class MainActivity : ComponentActivity() {
     private val chatViewModel: ChatViewModel by viewModels()
@@ -33,7 +34,6 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // 初始化 TTS
         tts = TextToSpeech(this) { status ->
             if (status == TextToSpeech.SUCCESS) {
                 tts?.language = Locale.US
@@ -69,7 +69,6 @@ fun ChatScreen(vm: ChatViewModel) {
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val scope = rememberCoroutineScope()
 
-    // 自动滚动到底部逻辑
     LaunchedEffect(vm.chatMessages.size) {
         if (vm.chatMessages.isNotEmpty()) {
             listState.animateScrollToItem(vm.chatMessages.size - 1)
@@ -80,11 +79,40 @@ fun ChatScreen(vm: ChatViewModel) {
         drawerState = drawerState,
         drawerContent = {
             ModalDrawerSheet(modifier = Modifier.width(300.dp)) {
-                Row(modifier = Modifier.padding(16.dp).fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                    Text("Scenarios", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                // 1. 标题栏
+                Row(modifier = Modifier.padding(16.dp).fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically) {
+                    Text("FakeFluent", fontWeight = FontWeight.Black, fontSize = 20.sp)
+                }
+
+                // 🚀 建议把 Notebook 放在这里（顶部），作为一个固定功能
+                NavigationDrawerItem(
+                    label = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Book, null, modifier = Modifier.padding(end = 12.dp))
+                            Text("My Notebook", fontWeight = FontWeight.Bold)
+                        }
+                    },
+                    selected = false,
+                    onClick = {
+                        scope.launch { drawerState.close() }
+                        vm.isNotebookOpen = true
+                    },
+                    modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding)
+                )
+
+                HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+
+                // 2. 场景列表标题
+                Row(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp).fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically) {
+                    Text("Scenarios", color = Color.Gray, fontSize = 14.sp)
                     IconButton(onClick = { showAddDialog = true }) { Icon(Icons.Default.Add, "Add") }
                 }
-                HorizontalDivider()
+
+                // 3. 场景列表 (LazyColumn)
                 LazyColumn {
                     items(vm.scenarios) { scenario ->
                         NavigationDrawerItem(
@@ -98,7 +126,10 @@ fun ChatScreen(vm: ChatViewModel) {
                                 }
                             },
                             selected = false,
-                            onClick = { scope.launch { drawerState.close() }; inputText = scenario.prompt },
+                            onClick = {
+                                scope.launch { drawerState.close() }
+                                inputText = scenario.prompt
+                            },
                             modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding)
                         )
                     }
@@ -116,12 +147,17 @@ fun ChatScreen(vm: ChatViewModel) {
             }
         ) { padding ->
             Column(modifier = Modifier.padding(padding).fillMaxSize().imePadding().padding(horizontal = 16.dp)) {
-                // 消息列表
                 LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth(), state = listState, contentPadding = PaddingValues(vertical = 16.dp)) {
-                    items(vm.chatMessages) { ChatBubble(it) { if (!it.isUser) vm.speakText(it.content) } }
+                    // ✅ 修复点 1：补全了 items 的闭合花括号
+                    items(vm.chatMessages) { messageUI ->
+                        ChatBubble(
+                            message = messageUI,
+                            vm = vm,
+                            onSpeak = { if (!messageUI.isUser) vm.speakText(messageUI.content) }
+                        )
+                    }
                 }
 
-                // --- 底部输入区域 ---
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(bottom = 16.dp).fillMaxWidth()) {
                     TextField(
                         value = inputText, onValueChange = { inputText = it },
@@ -135,15 +171,10 @@ fun ChatScreen(vm: ChatViewModel) {
                         )
                     )
 
-                    // 🚀 停止键逻辑：只有在加载文字(isLoading)或播放语音(isProcessing)时出现
                     if (vm.isLoading || vm.isProcessing) {
                         Spacer(Modifier.width(8.dp))
                         Box(
-                            modifier = Modifier
-                                .size(48.dp)
-                                .clip(CircleShape)
-                                .background(Color(0xFFFFEBEE))
-                                .clickable { vm.stopGenerating() },
+                            modifier = Modifier.size(48.dp).clip(CircleShape).background(Color(0xFFFFEBEE)).clickable { vm.stopGenerating() },
                             contentAlignment = Alignment.Center
                         ) {
                             Icon(Icons.Default.Stop, "Stop AI", tint = Color.Red)
@@ -152,7 +183,6 @@ fun ChatScreen(vm: ChatViewModel) {
 
                     Spacer(Modifier.width(8.dp))
 
-                    // 发送键始终存在
                     FloatingActionButton(
                         onClick = { if (inputText.isNotBlank()) { vm.sendMessage(inputText); inputText = "" } },
                         containerColor = if (inputText.isBlank()) Color.LightGray else Color(0xFF2196F3),
@@ -164,66 +194,62 @@ fun ChatScreen(vm: ChatViewModel) {
         }
     }
 
-    // --- 对话框区域 ---
     if (showAddDialog) {
         AlertDialog(
             onDismissRequest = { showAddDialog = false },
             title = { Text("New Scenario") },
             text = {
                 Column {
-                    // 1. 图标输入 (Emoji)
-                    OutlinedTextField(
-                        value = newIcon,
-                        onValueChange = { newIcon = it },
-                        label = { Text("Icon (Emoji)") },
-                        placeholder = { Text("e.g. ✈️") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                    OutlinedTextField(value = newIcon, onValueChange = { newIcon = it }, label = { Text("Icon (Emoji)") }, modifier = Modifier.fillMaxWidth())
                     Spacer(Modifier.height(8.dp))
-
-                    // 2. 场景名称
-                    OutlinedTextField(
-                        value = newTitle,
-                        onValueChange = { newTitle = it },
-                        label = { Text("Scenario Name") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                    OutlinedTextField(value = newTitle, onValueChange = { newTitle = it }, label = { Text("Scenario Name") }, modifier = Modifier.fillMaxWidth())
                     Spacer(Modifier.height(8.dp))
-
-                    // 3. AI Prompt
-                    OutlinedTextField(
-                        value = newPrompt,
-                        onValueChange = { newPrompt = it },
-                        label = { Text("Initial Prompt") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                    OutlinedTextField(value = newPrompt, onValueChange = { newPrompt = it }, label = { Text("Initial Prompt") }, modifier = Modifier.fillMaxWidth())
                 }
             },
             confirmButton = {
                 Button(onClick = {
-                    // 确保图标不为空，否则给个默认的 ✨
-                    val finalIcon = if (newIcon.isBlank()) "✨" else newIcon
-                    vm.addScenario(newTitle, newPrompt, finalIcon)
-
-                    // 重置所有输入框状态
-                    showAddDialog = false
-                    newTitle = ""
-                    newPrompt = ""
-                    newIcon = "✨"
+                    vm.addScenario(newTitle, newPrompt, if (newIcon.isBlank()) "✨" else newIcon)
+                    showAddDialog = false; newTitle = ""; newPrompt = ""; newIcon = "✨"
                 }) { Text("Save") }
             },
-            dismissButton = {
-                TextButton(onClick = { showAddDialog = false }) { Text("Cancel") }
-            }
+            dismissButton = { TextButton(onClick = { showAddDialog = false }) { Text("Cancel") } }
         )
     }
     if (vm.isSheetOpen) ModalBottomSheet(onDismissRequest = { vm.isSheetOpen = false }) { SettingsContent(vm) }
+    if (vm.isNotebookOpen) {
+        NotebookScreen(vm)
+    }
 }
 
+// ✅ 修复点 2：将 ChatBubble 移出 ChatScreen，确保它是顶层函数
 @Composable
-fun ChatBubble(message: ChatMessageUI, onSpeak: () -> Unit) {
+fun ChatBubble(message: ChatMessageUI, vm: ChatViewModel, onSpeak: () -> Unit) {
     val isUser = message.isUser
-    Row(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start) {
+    // 🚀 新增：从 ViewModel 观察收藏列表，判断当前文本是否在其中
+    val favorites by vm.favoriteWords.collectAsState()
+    val isFav = favorites.any { it.originalText == message.content.split("Correction:")[0].trim() }
+
+    Row( /* ...原有代码... */ ) {
+        if (!isUser) {
+            IconButton(
+                onClick = {
+                    val parts = message.content.split("Correction:")
+                    vm.toggleFavorite(parts[0].trim(), parts.getOrNull(1)?.trim() ?: "")
+                },
+                modifier = Modifier.size(32.dp)
+            ) {
+                Icon(
+                    // 🚀 修改：如果是已收藏，显示实心星星，否则显示空心
+                    imageVector = if (isFav) Icons.Default.Star else Icons.Default.StarBorder,
+                    contentDescription = "Favorite",
+                    // 🚀 修改：已收藏显示金色，未收藏显示灰色
+                    tint = if (isFav) Color(0xFFFFD700) else Color.Gray,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+        }
+
         Column(horizontalAlignment = if (isUser) Alignment.End else Alignment.Start) {
             val parts = message.content.split("Correction:")
             Surface(
@@ -234,7 +260,6 @@ fun ChatBubble(message: ChatMessageUI, onSpeak: () -> Unit) {
             ) {
                 Text(text = parts[0].trim(), modifier = Modifier.padding(12.dp), color = if (isUser) Color.White else Color.Black)
             }
-            // 纠错卡片逻辑
             if (parts.size > 1 && !isUser) {
                 Surface(
                     color = Color(0xFFFFF8E1),
@@ -301,5 +326,116 @@ fun SettingsContent(vm: ChatViewModel) {
             text = { OutlinedTextField(value = inputKey, onValueChange = { inputKey = it }, placeholder = { Text("sk-...") }, modifier = Modifier.fillMaxWidth()) },
             confirmButton = { Button(onClick = { vm.saveApiKey(inputKey); showKeyDialog = false }) { Text("Save") } }
         )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun NotebookScreen(vm: ChatViewModel) {
+    // 实时观察收藏列表
+    val favorites by vm.favoriteWords.collectAsState(initial = emptyList())
+
+    // 使用 Surface 确保背景不透明，盖住下方的聊天界面
+    Surface(modifier = Modifier.fillMaxSize(), color = Color(0xFFF8F9FA)) {
+        Scaffold(
+            topBar = {
+                TopAppBar(
+                    title = { Text("My Notebook", fontWeight = FontWeight.Bold) },
+                    navigationIcon = {
+                        IconButton(onClick = { vm.isNotebookOpen = false }) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.White)
+                )
+            }
+        ) { padding ->
+            if (favorites.isEmpty()) {
+                Column(
+                    modifier = Modifier.fillMaxSize(),
+                    verticalArrangement = Arrangement.Center,
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Icon(Icons.Default.Book, null, modifier = Modifier.size(64.dp), tint = Color.LightGray)
+                    Spacer(Modifier.height(16.dp))
+                    Text("Your notebook is empty", color = Color.Gray)
+                    Text("Tap ⭐ in chat to save phrases.", fontSize = 12.sp, color = Color.LightGray)
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier.padding(padding).fillMaxSize(),
+                    contentPadding = PaddingValues(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    items(favorites) { word ->
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 6.dp)
+                                // 🚀 保留全卡片点击，涟漪效果会让反馈很直观
+                                .clickable { vm.speakText(word.originalText) },
+                            colors = CardDefaults.cardColors(containerColor = Color.White),
+                            elevation = CardDefaults.cardElevation(1.dp), // 稍微降低阴影，显得更扁平现代
+                            shape = RoundedCornerShape(16.dp) // 圆角大一点，更亲和
+                        ) {
+                            Column(modifier = Modifier.padding(16.dp)) {
+                                Row(verticalAlignment = Alignment.Top) {
+                                    // 文字内容占据绝大部分空间
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = word.originalText,
+                                            fontSize = 17.sp,
+                                            fontWeight = FontWeight.Medium,
+                                            lineHeight = 22.sp
+                                        )
+
+                                        if (word.correction.isNotEmpty()) {
+                                            Spacer(Modifier.height(10.dp))
+                                            // 用一个小标签标记纠错
+                                            Text(
+                                                text = "SUGGESTION",
+                                                fontSize = 10.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = Color(0xFFFFA000),
+                                                modifier = Modifier
+                                                    .background(Color(0xFFFFF8E1), RoundedCornerShape(4.dp))
+                                                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                                            )
+                                            Text(
+                                                text = word.correction,
+                                                fontSize = 15.sp,
+                                                color = Color(0xFF5D4037),
+                                                modifier = Modifier.padding(top = 4.dp)
+                                            )
+                                        }
+                                    }
+
+                                    // 🚀 删除键：红色，但在右侧独立点击
+                                    IconButton(
+                                        onClick = { vm.toggleFavorite(word.originalText) },
+                                        modifier = Modifier.size(32.dp).offset(x = 8.dp, y = (-8).dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Delete,
+                                            contentDescription = "Delete",
+                                            tint = Color(0xFFFF5252),
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                    }
+                                }
+
+                                // 底部的小灰字
+                                Text(
+                                    text = "# ${word.scene}",
+                                    fontSize = 11.sp,
+                                    color = Color(0xFFBDBDBD),
+                                    modifier = Modifier.padding(top = 12.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }

@@ -2,6 +2,8 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
+
+    kotlin("kapt")
 }
 
 android {
@@ -33,6 +35,15 @@ android {
 }
 
 dependencies {
+    val room_version = "2.6.1"
+
+    implementation("androidx.room:room-runtime:$room_version")
+    implementation("androidx.room:room-ktx:$room_version")
+    // 如果你使用的是 Kotlin，需要这个注解处理器
+    kapt("androidx.room:room-compiler:$room_version")
+
+    // 如果你没用 kapt，可能需要用 ksp (根据你项目配置选择)
+    // ksp("androidx.room:room-compiler:$room_version")
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.activity:activity-compose:1.9.1")
     implementation(platform("androidx.compose:compose-bom:2024.06.00"))

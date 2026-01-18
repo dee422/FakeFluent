@@ -148,7 +148,12 @@ fun ChatScreen(vm: ChatViewModel) {
         ) { padding ->
             Column(modifier = Modifier.padding(padding).fillMaxSize().imePadding().padding(horizontal = 16.dp)) {
                 LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth(), state = listState, contentPadding = PaddingValues(vertical = 16.dp)) {
-                    // ✅ 修复点 1：补全了 items 的闭合花括号
+                    // 🚀 核心改动：当聊天记录为空时，显示开发者宣言
+                    if (vm.chatMessages.isEmpty()) {
+                        item {
+                            VibeCodingIntro()
+                        }
+                    }
                     items(vm.chatMessages) { messageUI ->
                         ChatBubble(
                             message = messageUI,
@@ -222,6 +227,41 @@ fun ChatScreen(vm: ChatViewModel) {
     }
 }
 
+@Composable
+fun VibeCodingIntro() {
+    Column(
+        modifier = Modifier.fillMaxWidth().padding(top = 40.dp, bottom = 20.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text("FakeFluent", fontSize = 32.sp, fontWeight = FontWeight.Black, color = Color(0xFF2196F3))
+        Text("A Vibe Coding Project", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = Color.Gray)
+
+        Spacer(Modifier.height(24.dp))
+
+        Surface(
+            color = Color(0xFFE3F2FD),
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(modifier = Modifier.padding(20.dp)) {
+                Text("授人以鱼，不如授人以渔。", fontWeight = FontWeight.Bold, color = Color(0xFF1976D2), fontSize = 16.sp)
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    "这不是一款标准的商业应用，而是一场关于“创造”的实验。我拒绝将其上架商店，因为比起直接给你一个工具，我更想邀你一起体验亲手构建它的乐趣。",
+                    fontSize = 14.sp, lineHeight = 22.sp, color = Color.DarkGray
+                )
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    "如果你想拥有它，欢迎联系我，我会教你如何搭建它。欢迎开启你的编程之旅。",
+                    fontSize = 14.sp, lineHeight = 22.sp, color = Color.DarkGray
+                )
+                Spacer(Modifier.height(16.dp))
+                Text("📬 jd1370791@gmail.com", fontWeight = FontWeight.Bold, fontSize = 15.sp, color = Color(0xFF1976D2))
+            }
+        }
+    }
+}
+
 // ✅ 修复点 2：将 ChatBubble 移出 ChatScreen，确保它是顶层函数
 @Composable
 fun ChatBubble(message: ChatMessageUI, vm: ChatViewModel, onSpeak: () -> Unit) {
@@ -282,6 +322,7 @@ fun ChatBubble(message: ChatMessageUI, vm: ChatViewModel, onSpeak: () -> Unit) {
 fun SettingsContent(vm: ChatViewModel) {
     var showKeyDialog by remember { mutableStateOf(false) }
     var inputKey by remember { mutableStateOf("") }
+
     val providers = listOf(
         "SiliconFlow (Qwen)" to "Qwen/Qwen2.5-7B-Instruct",
         "SiliconFlow (DeepSeek)" to "deepseek-ai/DeepSeek-V3",
@@ -301,6 +342,29 @@ fun SettingsContent(vm: ChatViewModel) {
                 Icon(Icons.Default.Edit, null)
             }
         }
+
+        // 🚀 核心改动：API 配置指南
+        Surface(
+            color = Color(0xFFF5F5F5),
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)
+        ) {
+            Column(modifier = Modifier.padding(12.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Info, null, modifier = Modifier.size(16.dp), tint = Color.Gray)
+                    Spacer(Modifier.width(8.dp))
+                    Text("配置指南与费用", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                }
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "• SiliconFlow: 国内直连，注册即送免费额度。DeepSeek-V3 性价比极高。\n" +
+                            "• Groq/Gemini: 需科学上网环境。Groq 极速，Gemini 有优秀免费层。\n" +
+                            "• 隐私: Key 仅保存在手机本地，绝不上传。",
+                    fontSize = 12.sp, lineHeight = 18.sp, color = Color.Gray
+                )
+            }
+        }
+
         HorizontalDivider(modifier = Modifier.padding(vertical = 16.dp))
         Text("Coach Role", fontWeight = FontWeight.Bold)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

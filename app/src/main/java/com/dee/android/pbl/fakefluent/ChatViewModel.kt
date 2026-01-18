@@ -18,15 +18,62 @@ data class ChatMessageUI(val content: String, val isUser: Boolean)
 data class Scenario(val title: String, val prompt: String, val icon: String = "💬")
 
 enum class CoachRole(val displayName: String, val systemPrompt: String) {
-    DAILY_COACH("全能教练", "You are a helpful English speaking coach. Keep responses brief and natural."),
-    TOEFL_EXAMINER("托福考官", "You are a professional TOEFL Speaking examiner. Respond briefly, then add a 'Correction:' section if needed."),
-    CAMPUS_BUDDY("校园搭子", "You are a friendly American college student. Use campus slang.")
+    FRIEND("口语伙伴", """
+        你是一个随和的英语口语伙伴。用地道的非正式英语和我聊天。
+        如果我表达有误，请在回复最后委婉地提醒。
+        格式：
+        [你的自然回复]
+        Correction: [地道表达] (简要说明)
+    """.trimIndent()),
+
+    COACH("专业外教", """
+        你是一名专业且耐心的英语老师。重点纠正我的语法和表达地道性。
+        ### 规则：
+        1. 自然回复：先回答我的意思。
+        2. 严格纠错：只要有表达不当，必须提供纠正。
+        ### 格式：
+        [你的回复]
+        Correction: [更正后的句子] (语法点拨)
+    """.trimIndent()),
+
+    IELTS("雅思考官", """
+        你是一名雅思口语考官。语气正式，会根据我的表达给出评估。
+        在自然接话后，请为我刚才的句子给出一个参考分数和改进建议。
+        格式：
+        [你的回复]
+        Correction: [高分表达] (Band Score: X & 提分建议)
+    """.trimIndent()),
+
+    TOEFL("托福考官", """
+        你是一名托福口语老师。注重逻辑连接词和学术词汇的使用。
+        请针对我的回答给出更具学术性或逻辑性的改写方案。
+        格式：
+        [你的回复]
+        Correction: [学术化改写] (逻辑/词汇优化建议)
+    """.trimIndent())
 }
 
 class ChatViewModel(application: Application) : AndroidViewModel(application) {
     // 🚀 1. 初始化数据库和 DAO
     private val db = com.dee.android.pbl.fakefluent.db.AppDatabase.getDatabase(application)
     private val dao = db.favoriteWordDao()
+
+    private val teacherPrompt = """
+You are "FakeFluent Coach", a professional and encouraging English teacher. 
+Your goal is to have a natural conversation with the user while subtly improving their English.
+
+### RULES:
+1. **Natural Response**: First, respond to the user's idea naturally (like a friend).
+2. **Strict Correction**: If the user makes ANY grammar, spelling, or usage mistakes, provide a correction at the end.
+3. **Format**: Use the exact format: 
+   [Your natural response here]
+   Correction: [Corrected sentence] (Briefly explain why in one simple sentence)
+
+### EXAMPLE:
+User: "I go to movie yesterday."
+Coach: "Oh, that's nice! Which movie did you see?
+Correction: I went to the movies yesterday. (Use the past tense 'went' for yesterday's actions.)"
+""".trimIndent()
 
     var isNotebookOpen by mutableStateOf(false)
 
@@ -69,7 +116,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     var scenarios = mutableStateListOf<Scenario>()
         private set
 
-    var currentRole by mutableStateOf(CoachRole.DAILY_COACH)
+    var currentRole by mutableStateOf(CoachRole.COACH)
     var currentProvider by mutableStateOf("SiliconFlow (Qwen)")
     var currentModel by mutableStateOf("Qwen/Qwen2.5-7B-Instruct")
     var userApiKey by mutableStateOf("")
@@ -133,26 +180,38 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     fun sendMessage(userText: String) {
         if (userText.isBlank()) return
-        if (apiChatHistory.isEmpty()) apiChatHistory.add(Message("system", currentRole.systemPrompt))
 
+        // 1. 确保 System Prompt 始终是最新的
+        if (apiChatHistory.isEmpty()) {
+            apiChatHistory.add(Message("system", currentRole.systemPrompt))
+        } else if (apiChatHistory[0].role == "system") {
+            apiChatHistory[0] = Message("system", currentRole.systemPrompt)
+        }
+
+        // 2. 定义 baseUrl (确保它在 fetchJob 外部，让下面的代码能访问到)
         val baseUrl = when (currentProvider) {
             "Groq (国外)" -> "https://api.groq.com/openai/v1/"
             "Gemini (国外)" -> "https://generativelanguage.googleapis.com/v1beta/openai/"
             else -> "https://api.siliconflow.com/v1/"
         }
 
+        // 3. 更新 UI 列表和历史记录
         chatMessages.add(ChatMessageUI(userText, true))
         apiChatHistory.add(Message("user", userText))
 
+        // 4. 开启协程请求 AI
         fetchJob = viewModelScope.launch {
-            isLoading = true // 🚀 开启显示停止键
+            isLoading = true
             val aiMsgIndex = chatMessages.size
             chatMessages.add(ChatMessageUI("...", false))
             var accumulatedText = ""
 
             try {
-                val service = RetrofitClient.getService(baseUrl)
-                val responseBody = service.getChatResponseStream(getEffectiveApiKey(), ChatRequest(currentModel, apiChatHistory, stream = true))
+                val service = RetrofitClient.getService(baseUrl) // 🚀 这里现在能找到 baseUrl 了
+                val responseBody = service.getChatResponseStream(
+                    getEffectiveApiKey(),
+                    ChatRequest(currentModel, apiChatHistory, stream = true)
+                )
 
                 withContext(Dispatchers.IO) {
                     responseBody.byteStream().bufferedReader().use { reader ->
@@ -163,16 +222,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                                     val content = res.choices[0].delta.content ?: ""
                                     if (content.isNotEmpty()) {
                                         accumulatedText += content
-                                        // 🚀 修复点：直接使用 viewModelScope.launch 而不是 withContext
                                         viewModelScope.launch(Dispatchers.Main) {
                                             if (aiMsgIndex < chatMessages.size) {
                                                 chatMessages[aiMsgIndex] = ChatMessageUI(accumulatedText, false)
                                             }
                                         }
                                     }
-                                } catch (e: Exception) {
-                                    // 忽略单行解析错误
-                                }
+                                } catch (e: Exception) { }
                             }
                         }
                     }
@@ -186,7 +242,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
             } finally {
-                isLoading = false // 🚀 完成或取消，停止键消失
+                isLoading = false
             }
         }
     }

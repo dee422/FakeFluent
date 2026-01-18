@@ -27,6 +27,9 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
 import java.util.*
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.FlowRow
 
 class MainActivity : ComponentActivity() {
     private val chatViewModel: ChatViewModel by viewModels()
@@ -317,11 +320,14 @@ fun ChatBubble(message: ChatMessageUI, vm: ChatViewModel, onSpeak: () -> Unit) {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun SettingsContent(vm: ChatViewModel) {
     var showKeyDialog by remember { mutableStateOf(false) }
     var inputKey by remember { mutableStateOf("") }
+
+    // 🚀 1. 记住滚动状态
+    val scrollState = rememberScrollState()
 
     val providers = listOf(
         "SiliconFlow (Qwen)" to "Qwen/Qwen2.5-7B-Instruct",
@@ -330,7 +336,14 @@ fun SettingsContent(vm: ChatViewModel) {
         "Gemini (国外)" to "gemini-1.5-flash"
     )
 
-    Column(modifier = Modifier.padding(24.dp).fillMaxWidth().padding(bottom = 32.dp)) {
+    // 🚀 2. 在 Column 上添加 verticalScroll
+    Column(
+        modifier = Modifier
+            .padding(24.dp)
+            .fillMaxWidth()
+            .verticalScroll(scrollState) // 允许滚动
+            .padding(bottom = 32.dp)
+    ) {
         Text("My API Key", fontWeight = FontWeight.Bold, fontSize = 18.sp)
         OutlinedCard(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), onClick = { inputKey = vm.getCurrentSavedKey(); showKeyDialog = true }) {
             Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -367,9 +380,18 @@ fun SettingsContent(vm: ChatViewModel) {
 
         HorizontalDivider(modifier = Modifier.padding(vertical = 16.dp))
         Text("Coach Role", fontWeight = FontWeight.Bold)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+// 使用 FlowRow 替代 Row
+        FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(0.dp) // 行与行之间的间距
+        ) {
             CoachRole.entries.forEach { role ->
-                FilterChip(selected = vm.currentRole == role, onClick = { vm.changeRole(role) }, label = { Text(role.displayName) })
+                FilterChip(
+                    selected = vm.currentRole == role,
+                    onClick = { vm.changeRole(role) },
+                    label = { Text(role.displayName) }
+                )
             }
         }
         Spacer(Modifier.height(16.dp))
@@ -380,6 +402,7 @@ fun SettingsContent(vm: ChatViewModel) {
                 Column(Modifier.padding(start = 8.dp)) { Text(name); Text(model, fontSize = 12.sp, color = Color.Gray) }
             }
         }
+        Spacer(Modifier.height(16.dp))
         Button(onClick = { vm.clearHistory(); vm.isSheetOpen = false }, modifier = Modifier.fillMaxWidth().padding(top = 16.dp), colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF5252))) { Text("Clear History") }
     }
 

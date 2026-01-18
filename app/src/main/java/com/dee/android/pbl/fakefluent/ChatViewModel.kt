@@ -50,7 +50,21 @@ enum class CoachRole(val displayName: String, val systemPrompt: String) {
         格式：
         [你的回复]
         Correction: [学术化改写] (逻辑/词汇优化建议)
-    """.trimIndent())
+    """.trimIndent()),
+
+    TRANSLATOR("同声翻译", """
+    # ROLE: Automatic Translation Engine
+    # TASK: 
+    - Translate CHINESE input to ENGLISH.
+    - Translate ENGLISH input to CHINESE.
+    # CONSTRAINTS:
+    - OUTPUT ONLY THE TRANSLATED TEXT. 
+    - DO NOT reply to questions. 
+    - DO NOT explain. 
+    - DO NOT say "Sure", "Okay", or "Here is the translation".
+    - If user says "How are you?", you output "你好吗？" (NOT "I am fine").
+    - If user says "你叫什么？", you output "What is your name?" (NOT "I am an AI").
+""".trimIndent())
 }
 
 class ChatViewModel(application: Application) : AndroidViewModel(application) {
@@ -188,18 +202,16 @@ Correction: I went to the movies yesterday. (Use the past tense 'went' for yeste
             apiChatHistory[0] = Message("system", currentRole.systemPrompt)
         }
 
-        // 2. 定义 baseUrl (确保它在 fetchJob 外部，让下面的代码能访问到)
+        // 2. 定义 baseUrl
         val baseUrl = when (currentProvider) {
             "Groq (国外)" -> "https://api.groq.com/openai/v1/"
             "Gemini (国外)" -> "https://generativelanguage.googleapis.com/v1beta/openai/"
             else -> "https://api.siliconflow.com/v1/"
         }
 
-        // 3. 更新 UI 列表和历史记录
         chatMessages.add(ChatMessageUI(userText, true))
         apiChatHistory.add(Message("user", userText))
 
-        // 4. 开启协程请求 AI
         fetchJob = viewModelScope.launch {
             isLoading = true
             val aiMsgIndex = chatMessages.size
@@ -207,10 +219,23 @@ Correction: I went to the movies yesterday. (Use the past tense 'went' for yeste
             var accumulatedText = ""
 
             try {
-                val service = RetrofitClient.getService(baseUrl) // 🚀 这里现在能找到 baseUrl 了
+                // 🚀 【关键改动在这里】 🚀
+                // 如果是翻译模式，我们只取：[第一条System指令] + [最后一条User输入]
+                val effectiveHistory = if (currentRole == CoachRole.TRANSLATOR) {
+                    // 核心：只给指令和当前这一句，彻底切断上下文联系
+                    listOf(
+                        Message("system", currentRole.systemPrompt), // 强制使用最新的冷酷指令
+                        Message("user", userText) // 只传当前用户输入)
+                    )
+                } else {
+                    apiChatHistory // 教学模式依然保留完整记忆
+                }
+
+                val service = RetrofitClient.getService(baseUrl)
                 val responseBody = service.getChatResponseStream(
                     getEffectiveApiKey(),
-                    ChatRequest(currentModel, apiChatHistory, stream = true)
+                    // 🚀 使用裁剪后的 effectiveHistory
+                    ChatRequest(currentModel, effectiveHistory, stream = true)
                 )
 
                 withContext(Dispatchers.IO) {
@@ -256,10 +281,35 @@ Correction: I went to the movies yesterday. (Use the past tense 'went' for yeste
         })
     }
 
+    // 在 ChatViewModel 类中找到 speakText
     fun speakText(text: String) {
         if (text.isBlank()) return
-        val speech = text.split("Correction:")[0].trim()
-        tts?.speak(speech, TextToSpeech.QUEUE_FLUSH, null, "CHAT_ID")
+
+        // 1. 处理文本：翻译模式读全文，教学模式截断 Correction
+        val speech = if (currentRole == CoachRole.TRANSLATOR) {
+            text.trim()
+        } else {
+            text.split("Correction:")[0].trim()
+        }
+
+        // 2. 语种自动识别逻辑
+        val language = if (isChinese(speech)) {
+            Locale.CHINESE // 识别到中文
+        } else {
+            Locale.US      // 默认英文
+        }
+
+        // 3. 动态设置语种并朗读
+        tts?.let { engine ->
+            engine.language = language
+            engine.speak(speech, TextToSpeech.QUEUE_FLUSH, null, "CHAT_ID")
+        }
+    }
+
+    // 4. 辅助函数：判断文本中是否包含中文字符
+    private fun isChinese(text: String): Boolean {
+        val p = java.util.regex.Pattern.compile("[\u4e00-\u9fa5]")
+        return p.matcher(text).find()
     }
 
     fun stopGenerating() {
